@@ -47,19 +47,47 @@ given. Follow these rules exactly:
 Fill in every field the schema asks for, and do not invent extra fields.
 """
 
+# Gemini's response_schema only understands a subset of JSON Schema (it's
+# based on OpenAPI 3.0). Keywords like "additionalProperties", "$schema",
+# "title", etc. make it reject the whole request with a 400 - even if they
+# only appear deep inside a nested "items"/"properties". So we strip
+# anything not in this allow-list, recursively, before sending it along.
+_ALLOWED_SCHEMA_KEYS = {
+    "type", "format", "description", "nullable", "enum",
+    "maxItems", "minItems", "properties", "required",
+    "propertyOrdering", "items",
+}
+
+
+def clean_schema(schema: Any) -> Any:
+    if isinstance(schema, dict):
+        cleaned = {}
+        for key, value in schema.items():
+            if key not in _ALLOWED_SCHEMA_KEYS:
+                continue  # drop unsupported keywords like additionalProperties
+            if key == "properties" and isinstance(value, dict):
+                cleaned[key] = {k: clean_schema(v) for k, v in value.items()}
+            elif key == "items":
+                cleaned[key] = clean_schema(value)
+            else:
+                cleaned[key] = value
+        return cleaned
+    return schema
+
 
 @app.post("/extract")
 def extract(req: ExtractRequest):
-    # response_schema IS the schema the grader sent us. Setting
-    # response_mime_type to application/json + passing this schema is what
-    # makes Gemini's reply strict, valid JSON instead of free text.
+    # response_schema IS the schema the grader sent us, minus any keywords
+    # Gemini's schema format doesn't support (see clean_schema above).
+    safe_schema = clean_schema(req.schema)
+
     response = client.models.generate_content(
         model=MODEL,
         contents=req.text,
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_PROMPT,
             response_mime_type="application/json",
-            response_schema=req.schema,
+            response_schema=safe_schema,
         ),
     )
 
