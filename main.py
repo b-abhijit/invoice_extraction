@@ -4,16 +4,16 @@ from typing import Any, Dict
 
 from fastapi import FastAPI
 from pydantic import BaseModel
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 app = FastAPI()
 
-# The API key is read from an environment variable so it's never
-# hard-coded in the source. Get a free key (no credit card) at
-# https://aistudio.google.com/apikey and set it on your hosting provider.
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+# The client picks up GEMINI_API_KEY from the environment automatically.
+# Get a free key (no credit card) at https://aistudio.google.com/apikey
+client = genai.Client()
 
-MODEL = "gemini-2.5-flash"  # free tier, no card required
+MODEL = "gemini-3.5-flash"  # free tier, no card required
 
 
 class ExtractRequest(BaseModel):
@@ -53,11 +53,11 @@ def extract(req: ExtractRequest):
     # response_schema IS the schema the grader sent us. Setting
     # response_mime_type to application/json + passing this schema is what
     # makes Gemini's reply strict, valid JSON instead of free text.
-    model = genai.GenerativeModel(MODEL, system_instruction=SYSTEM_PROMPT)
-
-    response = model.generate_content(
-        req.text,
-        generation_config=genai.GenerationConfig(
+    response = client.models.generate_content(
+        model=MODEL,
+        contents=req.text,
+        config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
             response_mime_type="application/json",
             response_schema=req.schema,
         ),
