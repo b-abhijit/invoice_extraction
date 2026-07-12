@@ -40,7 +40,15 @@ given. Follow these rules exactly:
   45 days", or "due in two weeks" (-> 14).
 - is_paid: boolean inferred from wording ("paid in full" -> true,
   "awaiting payment" -> false).
-- priority: exactly one of low, normal, high, urgent.
+- priority: exactly one of low, normal, high, urgent. Infer it from language
+  in the text, not just an explicit "Priority:" label:
+  - urgent: "urgent", "ASAP", "immediately", "critical", "top priority"
+  - high: "high priority", "important", "please prioritize", "expedite"
+  - low: "low priority", "no rush", "whenever convenient", "not urgent",
+    "at your convenience", "no immediate action needed", "non-urgent"
+  - normal: use this ONLY if there is no signal at all pointing to low,
+    high, or urgent. Do not default to normal just because the wording is
+    mild - "no rush" and "whenever convenient" mean low, not normal.
 - contact_email: lowercased.
 - line_items: an array of {sku, quantity, unit_price} in the order they
   appear in the text; unit_price is an integer.
