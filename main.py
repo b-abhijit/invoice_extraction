@@ -4,16 +4,18 @@ from typing import Any, Dict
 
 from fastapi import FastAPI
 from pydantic import BaseModel
-from google import genai
-from google.genai import types
+from openai import OpenAI
 
 app = FastAPI()
 
-# The client picks up GEMINI_API_KEY from the environment automatically.
-# Get a free key (no credit card) at https://aistudio.google.com/apikey
-client = genai.Client()
+# AI Pipe proxies to real OpenAI models using the course-provided AIPIPE_TOKEN
+# instead of a personal paid API key. Get yours at https://aipipe.org/login
+client = OpenAI(
+    api_key=os.environ["AIPIPE_TOKEN"],
+    base_url="https://aipipe.org/openai/v1",
+)
 
-MODEL = "gemini-3.5-flash"  # free tier, no card required
+MODEL = "gpt-4.1-nano"
 
 
 class ExtractRequest(BaseModel):
@@ -47,53 +49,50 @@ given. Follow these rules exactly:
 Fill in every field the schema asks for, and do not invent extra fields.
 """
 
-# Gemini's response_schema only understands a subset of JSON Schema (it's
-# based on OpenAPI 3.0). Keywords like "additionalProperties", "$schema",
-# "title", etc. make it reject the whole request with a 400 - even if they
-# only appear deep inside a nested "items"/"properties". So we strip
-# anything not in this allow-list, recursively, before sending it along.
-_ALLOWED_SCHEMA_KEYS = {
-    "type", "format", "description", "nullable", "enum",
-    "maxItems", "minItems", "properties", "required",
-    "propertyOrdering", "items",
-}
-
-
-def clean_schema(schema: Any) -> Any:
+# OpenAI's structured-output "strict" mode requires every object node to
+# have additionalProperties: false and list every one of its properties in
+# "required" - including nested objects like the ones inside line_items.
+# We enforce that here rather than trusting the incoming schema already has
+# it everywhere, since strict mode rejects the whole request if it's missing
+# even on one nested object.
+def harden_schema(schema: Any) -> Any:
     if isinstance(schema, dict):
-        cleaned = {}
-        for key, value in schema.items():
-            if key not in _ALLOWED_SCHEMA_KEYS:
-                continue  # drop unsupported keywords like additionalProperties
-            if key == "properties" and isinstance(value, dict):
-                cleaned[key] = {k: clean_schema(v) for k, v in value.items()}
-            elif key == "items":
-                cleaned[key] = clean_schema(value)
-            else:
-                cleaned[key] = value
-        return cleaned
+        schema = dict(schema)
+        if schema.get("type") == "object" and "properties" in schema:
+            schema["properties"] = {
+                k: harden_schema(v) for k, v in schema["properties"].items()
+            }
+            schema["additionalProperties"] = False
+            schema["required"] = list(schema["properties"].keys())
+        elif "items" in schema:
+            schema["items"] = harden_schema(schema["items"])
+        return schema
     return schema
 
 
 @app.post("/extract")
 def extract(req: ExtractRequest):
-    # response_schema IS the schema the grader sent us, minus any keywords
-    # Gemini's schema format doesn't support (see clean_schema above).
-    safe_schema = clean_schema(req.schema)
+    safe_schema = harden_schema(req.schema)
 
-    response = client.models.generate_content(
+    response = client.chat.completions.create(
         model=MODEL,
-        contents=req.text,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
-            response_mime_type="application/json",
-            response_schema=safe_schema,
-        ),
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": req.text},
+        ],
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "invoice_extraction",
+                "schema": safe_schema,
+                "strict": True,
+            },
+        },
     )
 
     try:
-        result = json.loads(response.text)
-    except (ValueError, AttributeError):
+        result = json.loads(response.choices[0].message.content)
+    except (ValueError, AttributeError, IndexError):
         return {"error": "Model did not return valid structured output"}
 
     # Safety net: keep ONLY the keys the schema expects, nothing extra,
